@@ -1,4 +1,6 @@
 #include "shell.h"
+#include "lexer.h"
+#include "parser.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -28,6 +30,21 @@ int main(void)
             continue;
         }
         input[strcspn(input, "\n")] = '\0';
+
+        {
+            TokenList tokens;
+            int invalid;
+
+            token_list_init(&tokens);
+            invalid = lex_line(input, &tokens);
+            if (invalid == 0) {
+                invalid = parse_tokens(&tokens);
+            }
+            if (invalid != 0) {
+                fputs("cshell: invalid syntax\n", stderr);
+            }
+            token_list_destroy(&tokens);
+        }
     }
 
     putchar('\n');

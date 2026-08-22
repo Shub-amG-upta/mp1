@@ -28,6 +28,7 @@ void token_list_init(TokenList *tokens);
 void token_list_destroy(TokenList *tokens);
 int token_list_push(TokenList *tokens, TokenType type, const char *text,
                     size_t text_length);
+int lex_line(const char *line, TokenList *tokens);
 const char *token_type_name(TokenType type);
 
 #endif
