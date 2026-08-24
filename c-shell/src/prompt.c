@@ -11,13 +11,16 @@
 int shell_state_init(ShellState *state)
 {
     state->home_dir = getcwd(NULL, 0);
+    state->previous_dir = NULL;
     return state->home_dir == NULL ? -1 : 0;
 }
 
 void shell_state_destroy(ShellState *state)
 {
     free(state->home_dir);
+    free(state->previous_dir);
     state->home_dir = NULL;
+    state->previous_dir = NULL;
 }
 
 static const char *display_path(const ShellState *state, const char *cwd)

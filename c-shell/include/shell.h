@@ -5,6 +5,7 @@
 
 typedef struct {
     char *home_dir;
+    char *previous_dir;
 } ShellState;
 
 int shell_state_init(ShellState *state);
