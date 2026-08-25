@@ -2,6 +2,7 @@
 #include "func.h"
 #include "lexer.h"
 #include "parser.h"
+#include "reveal.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -47,6 +48,7 @@ int main(void)
                 run_hop(&state, &tokens);
                 run_locate(&state, &tokens);
                 run_peek(&state, &tokens);
+                run_reveal(&state, &tokens);
             }
             token_list_destroy(&tokens);
         }
