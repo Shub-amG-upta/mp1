@@ -3,6 +3,7 @@
 #include "lexer.h"
 #include "parser.h"
 #include "reveal.h"
+#include "execute.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -45,10 +46,12 @@ int main(void)
             if (invalid != 0) {
                 fputs("cshell: invalid syntax\n", stderr);
             } else {
-                run_hop(&state, &tokens);
-                run_locate(&state, &tokens);
-                run_peek(&state, &tokens);
-                run_reveal(&state, &tokens);
+                if (run_hop(&state, &tokens) == 0 &&
+                    run_locate(&state, &tokens) == 0 &&
+                    run_peek(&state, &tokens) == 0 &&
+                    run_reveal(&state, &tokens) == 0) {
+                    run_external(&state, &tokens);
+                }
             }
             token_list_destroy(&tokens);
         }
