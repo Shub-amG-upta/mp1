@@ -45,6 +45,8 @@ int main(void)
                 fputs("cshell: invalid syntax\n", stderr);
             } else {
                 run_hop(&state, &tokens);
+                run_locate(&state, &tokens);
+                run_peek(&state, &tokens);
             }
             token_list_destroy(&tokens);
         }

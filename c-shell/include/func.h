@@ -5,5 +5,7 @@
 #include "shell.h"
 
 int run_hop(ShellState *state, const TokenList *tokens);
+int run_locate(ShellState *state, const TokenList *tokens);
+int run_peek(ShellState *state, const TokenList *tokens);
 
 #endif
