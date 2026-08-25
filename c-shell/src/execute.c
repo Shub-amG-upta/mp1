@@ -1,4 +1,5 @@
 #include "execute.h"
+#include "c3c4.h"
 #include "redirection.h"
 
 #include <errno.h>
@@ -24,7 +25,7 @@ static char *make_path(const char *directory,const char *name){
     return path;
 }
 
-static char *find_command(const char *name,int path_only){
+char *find_executable(const char *name,int path_only){
     char *path_copy;
     char *part;
     char *saveptr=NULL;
@@ -69,10 +70,12 @@ int run_external(ShellState *state,const TokenList *tokens){
     char *path;
     int path_only=0;
     FILE *input_stream=NULL;
+    OutputRedirect output;
     pid_t child;
     int status;
 
     (void)state;
+    output_redirect_init(&output);
     if(tokens->count==0 || tokens->items[0].type!=TOKEN_WORD) return 0;
     argv=calloc(tokens->count+1,sizeof(char *));
     if(argv==NULL){
@@ -90,16 +93,25 @@ int run_external(ShellState *state,const TokenList *tokens){
         return 0;
     }
 
+    if(prepare_output(tokens,&output)!=0){
+        free(argv);
+        if(input_stream!=NULL) fclose(input_stream);
+        fputs("cshell: unable to create file for writing\n",stderr);
+        output_redirect_destroy(&output);
+        return 1;
+    }
+
     name=tokens->items[0].text;
     if(name[0]=='%'){
         path_only=1;
         name++;
     }
-    path=find_command(name,path_only);
+    path=find_executable(name,path_only);
     if(path==NULL){
         fprintf(stderr,"cshell: command not found (%s)\n",name);
         free(argv);
         if(input_stream!=NULL) fclose(input_stream);
+        output_redirect_destroy(&output);
         return 1;
     }
 
@@ -111,6 +123,12 @@ int run_external(ShellState *state,const TokenList *tokens){
             perror("cshell: input redirection failed");
             _exit(1);
         }
+        if(output.count>0 &&
+           dup2(output.write_fd,STDOUT_FILENO)<0){
+            perror("cshell: output redirection failed");
+            _exit(1);
+        }
+        output_redirect_close_child(&output);
         execve(path,argv,environ);
         fprintf(stderr,"cshell: command not found (%s)\n",name);
         _exit(127);
@@ -118,6 +136,10 @@ int run_external(ShellState *state,const TokenList *tokens){
     if(child<0){
         perror("cshell: fork failed");
     }else{
+        if(output.count>0){
+            output_redirect_close_parent_write(&output);
+            output_redirect_relay(&output);
+        }
         while(waitpid(child,&status,0)<0 && errno==EINTR){
         }
     }
@@ -125,5 +147,6 @@ int run_external(ShellState *state,const TokenList *tokens){
     free(argv);
     free(path);
     if(input_stream!=NULL) fclose(input_stream);
+    output_redirect_destroy(&output);
     return 1;
 }

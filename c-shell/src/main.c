@@ -1,4 +1,5 @@
 #include "shell.h"
+#include "c3c4.h"
 #include "func.h"
 #include "lexer.h"
 #include "parser.h"
@@ -46,7 +47,8 @@ int main(void)
             if (invalid != 0) {
                 fputs("cshell: invalid syntax\n", stderr);
             } else {
-                if (run_hop(&state, &tokens) == 0 &&
+                if (run_pipeline(&state, &tokens) == 0 &&
+                    run_hop(&state, &tokens) == 0 &&
                     run_locate(&state, &tokens) == 0 &&
                     run_peek(&state, &tokens) == 0 &&
                     run_reveal(&state, &tokens) == 0) {

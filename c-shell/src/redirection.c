@@ -8,7 +8,6 @@
 static int copy_file(int input_fd,int output_fd){
     char buffer[4096];
     ssize_t bytes_read;
-
     for(;;){
         bytes_read=read(input_fd,buffer,sizeof(buffer));
         if(bytes_read==0) return 0;
@@ -36,7 +35,6 @@ int collect_command(const TokenList *tokens,char **argv,
     size_t i=0;
     size_t count=0;
     FILE *stream=NULL;
-
     while(i<tokens->count){
         if(tokens->items[i].type==TOKEN_WORD){
             argv[count++]=tokens->items[i].text;
@@ -52,10 +50,7 @@ int collect_command(const TokenList *tokens,char **argv,
             }
             if(stream==NULL){
                 stream=tmpfile();
-                if(stream==NULL){
-                    perror("cshell: unable to prepare input");
-                    return -1;
-                }
+                if(stream==NULL) return -1;
             }
             input_fd=open(tokens->items[i+1].text,O_RDONLY);
             if(input_fd<0){
@@ -73,7 +68,6 @@ int collect_command(const TokenList *tokens,char **argv,
         }
         break;
     }
-
     if(stream!=NULL && lseek(fileno(stream),0,SEEK_SET)==(off_t)-1){
         fclose(stream);
         return -1;
