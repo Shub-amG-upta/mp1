@@ -5,9 +5,11 @@
 #include "parser.h"
 #include "reveal.h"
 #include "execute.h"
-
+#include "d1d2.h"
 #include <stdio.h>
 #include <string.h>
+
+
 
 int main(void)
 {
@@ -19,6 +21,9 @@ int main(void)
         return 1;
     }
     for (;;) {
+        
+        void_reap_background_processes();
+
         if (print_prompt(&state) != 0) {
             perror("cshell: prompt failed");
             break;
@@ -47,13 +52,7 @@ int main(void)
             if (invalid != 0) {
                 fputs("cshell: invalid syntax\n", stderr);
             } else {
-                if (run_pipeline(&state, &tokens) == 0 &&
-                    run_hop(&state, &tokens) == 0 &&
-                    run_locate(&state, &tokens) == 0 &&
-                    run_peek(&state, &tokens) == 0 &&
-                    run_reveal(&state, &tokens) == 0) {
-                    run_external(&state, &tokens);
-                }
+                run(&state, &tokens);
             }
             token_list_destroy(&tokens);
         }

@@ -102,7 +102,7 @@ void output_redirect_close_parent_write(OutputRedirect *output){
 int output_redirect_relay(OutputRedirect *output){
     char buffer[4096];
     ssize_t bytes_read;
-    int result=0;
+    int result=0; 
 
     while((bytes_read=read(output->read_fd,buffer,sizeof(buffer)))!=0){
         if(bytes_read<0){
