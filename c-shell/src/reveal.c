@@ -139,7 +139,7 @@ static void print_directory(const char *path,const char *shown_path,
         }
 
         if(entries[i].directory){
-            printf("%s/\n",child_shown);
+            printf("%s\n",child_shown);
             if(recursive){
                 print_directory(child_path,child_shown,show_hidden,recursive);
             }

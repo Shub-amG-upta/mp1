@@ -276,36 +276,74 @@ int run_pipeline(ShellState *state,const TokenList *tokens){
         }
     }
     for(size_t i=0;i<count;i++){
-        pid_t child=fork();
-        if(child==0){
-            char *name=stages[i].args[0];
-            char *path;
-            int path_only=0;
-            if(i>0) dup2(pipes[i-1][0],STDIN_FILENO);
-            if(i+1<count) dup2(pipes[i][1],STDOUT_FILENO);
-            if(stages[i].input>=0) dup2(stages[i].input,STDIN_FILENO);
-            if(stages[i].output>=0) dup2(stages[i].output,STDOUT_FILENO);
-            close_pipes(pipes,count-1);
-            if(stages[i].input>=0) close(stages[i].input);
-            if(stages[i].output>=0) close(stages[i].output);
-            if(name[0]=='%'){
-                path_only=1;
-                name++;
-                stages[i].args[0]=name;
-            }
-            path=find_executable(name,path_only);
-            if(path==NULL){
-                fprintf(stderr,"cshell: command not found (%s)\n",name);
-                _exit(127);
-            }
-            execve(path,stages[i].args,environ);
-            fprintf(stderr,"cshell: command not found (%s)\n",name);
-            free(path);
+    pid_t child=fork();
+
+    if(child==0){
+        if(i==0){
+            setpgid(0,0);
+        }else{
+            setpgid(0,children[0]);
+        }
+
+        char *name=stages[i].args[0];
+        char *path;
+        int path_only=0;
+
+        if(i>0){
+            dup2(pipes[i-1][0],STDIN_FILENO);
+        }
+        if(i+1<count){
+            dup2(pipes[i][1],STDOUT_FILENO);
+        }
+        if(stages[i].input>=0){
+            dup2(stages[i].input,STDIN_FILENO);
+        }
+        if(stages[i].output>=0){
+            dup2(stages[i].output,STDOUT_FILENO);
+        }
+
+        close_pipes(pipes,count-1);
+        if(stages[i].input>=0){
+            close(stages[i].input);
+        }
+        if(stages[i].output>=0){
+            close(stages[i].output);
+        }
+
+        if(name[0]=='%'){
+            path_only=1;
+            name++;
+            stages[i].args[0]=name;
+        }
+
+        path=find_executable(name,path_only);
+
+        if(path==NULL){
+            fprintf(stderr,
+                    "cshell: command not found (%s)\n",
+                    name);
             _exit(127);
         }
-        if(child<0) break;
-        children[made++]=child;
+
+        execve(path,stages[i].args,environ);
+        fprintf(stderr,
+                "cshell: command not found (%s)\n",
+                name);
+
+        free(path);
+        _exit(127);
     }
+    if(child<0){
+        break;
+    }
+    if(i==0){
+        setpgid(child,child);
+    }else{
+        setpgid(child,children[0]);
+    }
+
+    children[made++]=child;
+}
     close_pipes(pipes,count-1);
     for(size_t i=0;i<made;i++){
         while(waitpid(children[i],&status,0)<0 && errno==EINTR){

@@ -10,7 +10,16 @@
 
 int shell_state_init(ShellState *state)
 {
-    state->home_dir = getcwd(NULL, 0);
+    const char *home = getenv("HOME");
+
+    if (home == NULL) {
+        struct passwd *password = getpwuid(getuid());
+        if (password != NULL) {
+            home = password->pw_dir;
+        }
+    }
+
+    state->home_dir = (home != NULL) ? strdup(home) : NULL;
     state->previous_dir = NULL;
     return state->home_dir == NULL ? -1 : 0;
 }

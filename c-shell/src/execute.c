@@ -63,6 +63,19 @@ char *find_executable(const char *name,int path_only){
     return NULL;
 }
 
+int simple_external(const TokenList *tokens){
+    if(tokens->count==0) return 0;
+
+    for(size_t i=0;i<tokens->count;i++){
+        if(tokens->items[i].type!=TOKEN_WORD){
+            return 0;
+        }
+    }
+    return 1;
+}
+
+
+
 int run_external(ShellState *state,const TokenList *tokens){
     size_t count;
     char **argv;

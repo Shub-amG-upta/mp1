@@ -20,9 +20,10 @@ int main(void)
         perror("cshell: initialization failed");
         return 1;
     }
+    buff();
     for (;;) {
-        
-        void_reap_background_processes();
+
+       
 
         if (print_prompt(&state) != 0) {
             perror("cshell: prompt failed");

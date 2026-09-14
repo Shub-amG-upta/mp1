@@ -3,15 +3,18 @@
 #include "execute.h"
 #include "func.h"
 #include "reveal.h"
-
+#include "activities.h"
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include<string.h>
 
+extern char **environ;  
 #define MAX_JOBS 128
+
 
 static pid_t job_pid[MAX_JOBS];
 static char job_name[MAX_JOBS][32];
@@ -19,7 +22,8 @@ static volatile sig_atomic_t job_live[MAX_JOBS];
 static int job_count=0;
 static sigset_t child_mask;
 
-/* handlers may not call printf, so the message is built by hand */
+
+
 static void report(const char *name,pid_t pid,int normal){
     char line[96];
     char digits[16];
@@ -68,7 +72,7 @@ void buff(void){
     if(sigaction(SIGCHLD,&action,NULL)!=0) perror("cshell: sigaction failed");
 }
 
-/* run_external prints its own error but cannot tell us it failed */
+
 static int not_found(const TokenList *tokens){
     const char *name;
     char *path;
@@ -88,7 +92,8 @@ int runcomm(ShellState *state,const TokenList *tokens){
     run_hop(state,tokens)==0
     && run_locate(state,tokens)==0 
     && run_peek(state,tokens)==0 
-    && run_reveal(state,tokens)==0){
+    && run_reveal(state,tokens)==0
+    && runactivity(state,tokens)==0){
         int missing=not_found(tokens);
         run_external(state,tokens);
         return missing ? -1 : 1;
@@ -96,6 +101,20 @@ int runcomm(ShellState *state,const TokenList *tokens){
 
     return 1;
 }
+
+// static int externalbuff(const TokenList*tokens){
+//     static const char* builtins[]={"hop","reveal","peek","locate","activities"};
+//     if(tokens->count==0 || tokens->items[0].type!=TOKEN_WORD) return 0;
+//     for(size_t i=0;i<tokens->count;i++){
+//         if(tokens->items[i].type!=TOKEN_WORD) return 0;
+//     for(size_t i=0;i<5;i++){
+//         if(strcmp(tokens->items[0].text,builtins[i])==0) return 0;
+//     }
+    
+//     }
+//     return 1;
+// }
+
 
 int runbuff(ShellState *state,const TokenList *tokens){
     sigset_t previous;
@@ -120,11 +139,27 @@ int runbuff(ShellState *state,const TokenList *tokens){
         setpgid(0,0);
         signal(SIGCHLD,SIG_DFL);
         sigprocmask(SIG_SETMASK,&previous,NULL);
+        if(simple_external(tokens)){
+            char *argv[64];
+            const char *cmd=tokens->items[0].text;
+            char *path;
+            size_t n=0;
+            int path_only=0;
+ 
+            while(n<tokens->count && n<63){ argv[n]=tokens->items[n].text; n++; }
+            argv[n]=NULL;
+            if(cmd[0]=='%'){ path_only=1; cmd++; argv[0]=(char *)cmd; }
+            path=find_executable(cmd,path_only);
+            if(path!=NULL) execve(path,argv,environ);
+            fprintf(stderr,"cshell: command not found (%s)\n",cmd);
+            _exit(127);
+        }
         runcomm(state,tokens);
         _exit(0);
     }
 
-    setpgid(child,0);
+    setpgid(child,child);
+
     name=tokens->items[0].text;
     if(name[0]=='%') name++;
     for(i=0;name[i]!='\0' && i<31;i++) job_name[job_count][i]=name[i];
@@ -172,3 +207,18 @@ int run(ShellState *state,const TokenList *tokens){
     return 1;
     
     }
+
+int getjobcount(void) {
+    return job_count;
+}
+
+int getjobinfo(int index, pid_t *pid, char *pid_name, int *live) {
+    if (index < 0 || index >= job_count) return -1;
+
+    *pid = job_pid[index];
+    strncpy(pid_name, job_name[index], 32);
+
+    pid_name[31]='\0';
+    *live = job_live[index];
+    return 0;
+}
