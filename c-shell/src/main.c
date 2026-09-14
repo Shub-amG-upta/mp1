@@ -1,65 +1,71 @@
 #include "shell.h"
-#include "c3c4.h"
-#include "func.h"
-#include "lexer.h"
-#include "parser.h"
-#include "reveal.h"
-#include "execute.h"
 #include "d1d2.h"
+
+#include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-
-
 
 int main(void)
 {
     ShellState state = {0};
     char input[CSHELL_MAX_INPUT + 2];
+    int eof_after_stopped=0;
 
     if (shell_state_init(&state) != 0) {
-        perror("cshell: initialization failed");
+        fprintf(stderr, "cshell: failed to initialize shell\n");
         return 1;
     }
+
     buff();
+
     for (;;) {
-
-       
-
         if (print_prompt(&state) != 0) {
-            perror("cshell: prompt failed");
-            break;
+            shell_state_destroy(&state);
+            return 1;
         }
+
+        errno=0;
+
         if (fgets(input, sizeof(input), stdin) == NULL) {
+
+            if(take_interrupt() || errno==EINTR){
+                clearerr(stdin);
+                putchar('\n');
+                continue;
+            }
+
+            if(has_stopped_jobs() && eof_after_stopped==0){
+
+                fputs("cshell: there are stopped jobs\n",stderr);
+
+                eof_after_stopped=1;
+
+                clearerr(stdin);
+
+                continue;
+            }
+
             break;
         }
-        if (strchr(input, '\n') == NULL && !feof(stdin)) {
-            int ch;
-            while ((ch = getchar()) != '\n' && ch != EOF) {
-            }
-            fputs("cshell: input too long\n", stderr);
+
+        eof_after_stopped=0;
+
+        if (input[0] == '\0') {
             continue;
         }
+
         input[strcspn(input, "\n")] = '\0';
 
-        {
-            TokenList tokens;
-            int invalid;
-
-            token_list_init(&tokens);
-            invalid = lex_line(input, &tokens);
-            if (invalid == 0) {
-                invalid = parse_tokens(&tokens);
-            }
-            if (invalid != 0) {
-                fputs("cshell: invalid syntax\n", stderr);
-            } else {
-                run(&state, &tokens);
-            }
-            token_list_destroy(&tokens);
+        if (input[0] == '\0') {
+            continue;
         }
+
+        run(input, &state);
     }
 
     putchar('\n');
+    shutdown_jobs();
     shell_state_destroy(&state);
     return 0;
 }

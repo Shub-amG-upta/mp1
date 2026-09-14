@@ -1,8 +1,9 @@
 #include "execute.h"
 #include "c3c4.h"
 #include "redirection.h"
-
+#include "d1d2.h"
 #include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -85,12 +86,19 @@ int run_external(ShellState *state,const TokenList *tokens){
     FILE *input_stream=NULL;
     OutputRedirect output;
     pid_t child;
+    pid_t group;
     int status;
+
+
+    int stopped=0;
 
     (void)state;
     output_redirect_init(&output);
+
     if(tokens->count==0 || tokens->items[0].type!=TOKEN_WORD) return 0;
+
     argv=calloc(tokens->count+1,sizeof(char *));
+
     if(argv==NULL){
         perror("cshell: memory allocation failed");
         return 1;
@@ -129,8 +137,17 @@ int run_external(ShellState *state,const TokenList *tokens){
     }
 
     argv[0]=name;
+    group=is_background_child() ? getpgrp() : 0;
     child=fork();
     if(child==0){
+
+        setpgid(0,group);
+
+        signal(SIGINT,SIG_DFL);
+        signal(SIGTSTP,SIG_DFL);
+        signal(SIGTTOU,SIG_DFL);
+
+
         if(input_stream!=NULL &&
            dup2(fileno(input_stream),STDIN_FILENO)<0){
             perror("cshell: input redirection failed");
@@ -149,17 +166,39 @@ int run_external(ShellState *state,const TokenList *tokens){
     if(child<0){
         perror("cshell: fork failed");
     }else{
-        if(output.count>0){
-            output_redirect_close_parent_write(&output);
-            output_redirect_relay(&output);
+
+        setpgid(child,group==0 ? child : group);
+
+        if(is_background_child()==0){
+            giveterminal(child);
         }
-        while(waitpid(child,&status,0)<0 && errno==EINTR){
+
+        output_redirect_close_parent_write(&output);
+
+        wait_with_relay(child,&output,&status);
+
+        if(is_background_child()==0){
+
+            if(WIFSTOPPED(status)) stopped=1;
+
+            giveterminal(getpgrp());
+
+            if(stopped){
+                int job_number=add_stopped_job(child,tokens);
+                if(job_number>0) print_stopped(job_number);
+            }
         }
     }
 
+
+
+
     free(argv);
     free(path);
-    if(input_stream!=NULL) fclose(input_stream);
+
+    if (input_stream!=NULL) fclose(input_stream);
+
     output_redirect_destroy(&output);
     return 1;
+
 }

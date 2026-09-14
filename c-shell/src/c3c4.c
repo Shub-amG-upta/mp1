@@ -1,7 +1,10 @@
 #include "c3c4.h"
 #include "execute.h"
+#include "d1d2.h"
 
 #include <errno.h>
+#include <poll.h>
+#include <signal.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <sys/wait.h>
@@ -119,6 +122,41 @@ int output_redirect_relay(OutputRedirect *output){
     close(output->read_fd);
     output->read_fd=-1;
     return result;
+}
+
+int wait_with_relay(pid_t child,OutputRedirect *output,int *status){
+    char buffer[4096];
+    struct pollfd probe;
+
+    for(;;){
+        pid_t result;
+
+        if(output->read_fd>=0){
+            probe.fd=output->read_fd;
+            probe.events=POLLIN;
+
+            if(poll(&probe,1,100)>0){
+                ssize_t bytes=read(output->read_fd,buffer,sizeof(buffer));
+
+                if(bytes>0){
+                    for(size_t i=0;i<output->count;i++){
+                        write_all(output->files[i],buffer,(size_t)bytes);
+                    }
+                    continue;
+                }
+                if(bytes==0){
+                    close(output->read_fd);
+                    output->read_fd=-1;
+                }
+            }
+        }
+
+        result=waitpid(child,status,
+                       WUNTRACED|(output->read_fd>=0 ? WNOHANG : 0));
+
+        if(result==child) return 0;
+        if(result<0 && errno!=EINTR) return -1;
+    }
 }
 
 void output_redirect_destroy(OutputRedirect *output){
@@ -246,6 +284,8 @@ int run_pipeline(ShellState *state,const TokenList *tokens){
     size_t made=0;
     int result;
     int status;
+    int stopped=0;
+    pid_t group;
     (void)state;
     result=make_stages(tokens,&stages,&count);
     if(result==0) return 0;
@@ -275,80 +315,121 @@ int run_pipeline(ShellState *state,const TokenList *tokens){
             return 1;
         }
     }
+    group=is_background_child() ? getpgrp() : 0;
+
     for(size_t i=0;i<count;i++){
-    pid_t child=fork();
+        pid_t child=fork();
 
-    if(child==0){
-        if(i==0){
-            setpgid(0,0);
-        }else{
-            setpgid(0,children[0]);
-        }
+        if(child==0){
+            if(group!=0){
+                setpgid(0,group);
+            }else if(i==0){
+                setpgid(0,0);
+            }else{
+                setpgid(0,children[0]);
+            }
 
-        char *name=stages[i].args[0];
-        char *path;
-        int path_only=0;
+            signal(SIGINT,SIG_DFL);
+            signal(SIGTSTP,SIG_DFL);
+            signal(SIGTTOU,SIG_DFL);
 
-        if(i>0){
-            dup2(pipes[i-1][0],STDIN_FILENO);
-        }
-        if(i+1<count){
-            dup2(pipes[i][1],STDOUT_FILENO);
-        }
-        if(stages[i].input>=0){
-            dup2(stages[i].input,STDIN_FILENO);
-        }
-        if(stages[i].output>=0){
-            dup2(stages[i].output,STDOUT_FILENO);
-        }
+            char *name=stages[i].args[0];
+            char *path;
+            int path_only=0;
 
-        close_pipes(pipes,count-1);
-        if(stages[i].input>=0){
-            close(stages[i].input);
-        }
-        if(stages[i].output>=0){
-            close(stages[i].output);
-        }
+            if(i>0){
+                dup2(pipes[i-1][0],STDIN_FILENO);
+            }
+            if(i+1<count){
+                dup2(pipes[i][1],STDOUT_FILENO);
+            }
+            if(stages[i].input>=0){
+                dup2(stages[i].input,STDIN_FILENO);
+            }
+            if(stages[i].output>=0){
+                dup2(stages[i].output,STDOUT_FILENO);
+            }
 
-        if(name[0]=='%'){
-            path_only=1;
-            name++;
-            stages[i].args[0]=name;
-        }
+            close_pipes(pipes,count-1);
+            if(stages[i].input>=0){
+                close(stages[i].input);
+            }
+            if(stages[i].output>=0){
+                close(stages[i].output);
+            }
 
-        path=find_executable(name,path_only);
+            if(name[0]=='%'){
+                path_only=1;
+                name++;
+                stages[i].args[0]=name;
+            }
 
-        if(path==NULL){
+            path=find_executable(name,path_only);
+
+            if(path==NULL){
+                fprintf(stderr,
+                        "cshell: command not found (%s)\n",
+                        name);
+                _exit(127);
+            }
+
+            execve(path,stages[i].args,environ);
             fprintf(stderr,
                     "cshell: command not found (%s)\n",
                     name);
+
+            free(path);
             _exit(127);
         }
 
-        execve(path,stages[i].args,environ);
-        fprintf(stderr,
-                "cshell: command not found (%s)\n",
-                name);
+        if(child<0){
+            break;
+        }
 
-        free(path);
-        _exit(127);
-    }
-    if(child<0){
-        break;
-    }
-    if(i==0){
-        setpgid(child,child);
-    }else{
-        setpgid(child,children[0]);
+        if(group!=0){
+            setpgid(child,group);
+        }else if(i==0){
+            setpgid(child,child);
+        }else{
+            setpgid(child,children[0]);
+        }
+
+        children[made++]=child;
     }
 
-    children[made++]=child;
-}
+    if(made>0 && is_background_child()==0){
+        giveterminal(children[0]);
+    }
+
     close_pipes(pipes,count-1);
-    for(size_t i=0;i<made;i++){
-        while(waitpid(children[i],&status,0)<0 && errno==EINTR){
+
+    if(is_background_child()==0){
+
+        for(size_t i=0;i<made;i++){
+            while(waitpid(children[i],&status,WUNTRACED)<0 && errno==EINTR){
+            }
+
+            if(WIFSTOPPED(status)){
+                stopped=1;
+            }
+        }
+
+        giveterminal(getpgrp());
+
+        if(stopped && made>0){
+            int job_number=add_stopped_job(children[0],tokens);
+
+            if(job_number>0) print_stopped(job_number);
+        }
+
+    }else{
+
+        for(size_t i=0;i<made;i++){
+            while(waitpid(children[i],&status,0)<0 && errno==EINTR){
+            }
         }
     }
+
     free(pipes);
     free(children);
     free_stages(stages,count);
