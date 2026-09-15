@@ -5,6 +5,7 @@
 #include "reveal.h"
 #include "activities.h"
 #include "parser.h"
+#include "resume.h"
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
@@ -12,7 +13,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include<string.h>
-#include <fcntl.h>                            
+#include <fcntl.h>
+#include <sys/time.h>                            
 
 extern char **environ;  
 #define MAX_JOBS 128
@@ -20,7 +22,8 @@ extern char **environ;
 static pid_t job_pid[MAX_JOBS];
 static char job_name[MAX_JOBS][32];
 static volatile sig_atomic_t job_live[MAX_JOBS];
-static volatile sig_atomic_t job_stopped[MAX_JOBS];        
+static volatile sig_atomic_t job_stopped[MAX_JOBS];
+static volatile sig_atomic_t job_leader_done[MAX_JOBS];        
 static char job_command[MAX_JOBS][256];                        
 static int job_count=0;
 static sigset_t child_mask;
@@ -30,11 +33,55 @@ static pid_t shellpgid=-1;
 
 static int backgroundchild=0;
 static volatile sig_atomic_t interrupted=0;
+static volatile sig_atomic_t alarm_fired=0;
 
 
 static void handle_interrupt(int signal_number){
     (void)signal_number;
     interrupted=1;
+}
+
+
+static void handle_alarm(int signal_number){
+    (void)signal_number;
+    alarm_fired=1;
+}
+
+
+void start_job_timer(long seconds){
+    struct itimerval timer;
+
+    alarm_fired=0;
+    timer.it_value.tv_sec=seconds;
+    timer.it_value.tv_usec=0;
+    timer.it_interval.tv_sec=0;
+    timer.it_interval.tv_usec=50000;
+    setitimer(ITIMER_REAL,&timer,NULL);
+}
+
+
+void stop_job_timer(void){
+    struct itimerval timer={{0,0},{0,0}};
+    setitimer(ITIMER_REAL,&timer,NULL);
+}
+
+
+int job_timer_fired(void){
+    return alarm_fired;
+}
+
+
+/* children inherit the blocked SIGCHLD from run_tokens, execve keeps it */
+void reset_child_mask(void){
+    sigset_t unblock;
+
+    signal(SIGCHLD,SIG_DFL);
+    signal(SIGALRM,SIG_DFL);
+    signal(SIGTTIN,SIG_DFL);
+
+    sigemptyset(&unblock);
+    sigaddset(&unblock,SIGCHLD);
+    sigprocmask(SIG_UNBLOCK,&unblock,NULL);
 }
 
 
@@ -71,16 +118,21 @@ static void handle_sigchld(int signal_number){
 
     (void)signal_number;
 
-    while((pid=waitpid(-1,&status,WNOHANG))>0){
+    while((pid=waitpid(-1,&status,WNOHANG|WUNTRACED|WCONTINUED))>0){
 
         for(int i=0;i<job_count;i++){
 
             if(job_live[i] && job_pid[i]==pid){
 
-                if(WIFEXITED(status) || WIFSIGNALED(status)){
-
-                    job_live[i]=0;
+                if(WIFSTOPPED(status)){
+                    job_stopped[i]=1;
+                }
+                else if(WIFCONTINUED(status)){
                     job_stopped[i]=0;
+                }
+                else if(job_leader_done[i]==0){
+
+                    job_leader_done[i]=1;
 
                     report(job_name[i],
                           pid,
@@ -89,6 +141,15 @@ static void handle_sigchld(int signal_number){
 
                 break;
             }
+        }
+    }
+
+    /* a job stays listed until every process in its group is gone */
+    for(int i=0;i<job_count;i++){
+
+        if(job_live[i] && job_leader_done[i] && kill(-job_pid[i],0)!=0){
+            job_live[i]=0;
+            job_stopped[i]=0;
         }
     }
 
@@ -121,6 +182,9 @@ static void initterminal(void){
     sigaction(SIGTSTP,&action,NULL);
 
     signal(SIGTTOU,SIG_IGN);
+
+    action.sa_handler=handle_alarm;
+    sigaction(SIGALRM,&action,NULL);
 }
 
 
@@ -179,6 +243,7 @@ int add_stopped_job(pid_t pgid,const TokenList *tokens){
     job_pid[job_count]=pgid;
     job_live[job_count]=1;
     job_stopped[job_count]=1;
+    job_leader_done[job_count]=0;
 
     const char *name;
 
@@ -212,7 +277,7 @@ int add_stopped_job(pid_t pgid,const TokenList *tokens){
 void print_stopped(int number){
     if(number<1 || number>job_count) return;
 
-    printf("[%d] + Stopped   %s\n",number,job_command[number-1]);
+    printf("\n[%d] + Stopped   %s\n",number,job_command[number-1]);
     fflush(stdout);
 }
 
@@ -236,6 +301,7 @@ void shutdown_jobs(void){
 
         if(job_live[i]){
             kill(-job_pid[i],SIGHUP);
+            kill(-job_pid[i],SIGCONT);
         }
     }
 }
@@ -253,7 +319,7 @@ void buff(void){
     action.sa_handler=handle_sigchld;
     sigemptyset(&action.sa_mask);
 
-    action.sa_flags=SA_RESTART|SA_NOCLDSTOP;
+    action.sa_flags=SA_RESTART;
 
     if(sigaction(SIGCHLD,&action,NULL)!=0){
         perror("cshell: sigaction failed");
@@ -292,7 +358,8 @@ int runcomm(ShellState *state,const TokenList *tokens){
     && run_locate(state,tokens)==0 
     && run_peek(state,tokens)==0 
     && run_reveal(state,tokens)==0
-    && runactivity(state,tokens)==0){
+    && runactivity(state,tokens)==0
+    && run_resume(state,tokens)==0){
 
         int missing=not_found(tokens);
 
@@ -302,6 +369,21 @@ int runcomm(ShellState *state,const TokenList *tokens){
     }
 
     return 1;
+}
+
+
+int is_builtin(const char *name){
+    return strcmp(name,"hop")==0 || strcmp(name,"reveal")==0 ||
+           strcmp(name,"peek")==0 || strcmp(name,"locate")==0 ||
+           strcmp(name,"activities")==0 || strcmp(name,"resume")==0;
+}
+
+
+static int has_pipe(const TokenList *tokens){
+    for(size_t i=0;i<tokens->count;i++){
+        if(tokens->items[i].type==TOKEN_OP_PIPE) return 1;
+    }
+    return 0;
 }
 
 
@@ -318,13 +400,20 @@ int runbuff(ShellState *state,const TokenList *tokens){
 
     sigprocmask(SIG_BLOCK,&child_mask,&previous);
 
-    child=fork();
+    if(has_pipe(tokens)){
+        child=launch_background_pipeline(state,tokens);
+    }
+    else{
+        child=fork();
+    }
 
     if(child<0){
 
         sigprocmask(SIG_SETMASK,&previous,NULL);
 
-        perror("cshell: fork failed");
+        if(has_pipe(tokens)==0){
+            perror("cshell: fork failed");
+        }
 
         return 1;
     }
@@ -335,7 +424,7 @@ int runbuff(ShellState *state,const TokenList *tokens){
 
         set_background_child(1);
 
-        signal(SIGCHLD,SIG_DFL);
+        reset_child_mask();
 
         signal(SIGINT,SIG_DFL);
         signal(SIGTSTP,SIG_DFL);
@@ -399,6 +488,7 @@ int runbuff(ShellState *state,const TokenList *tokens){
     job_pid[job_count]=child;
     job_live[job_count]=1;
     job_stopped[job_count]=0;
+    job_leader_done[job_count]=0;
 
     save_command(job_count,tokens);
 
@@ -504,4 +594,34 @@ int getjobinfo(int index,pid_t *pid,char *pid_name,int *live){
     *live=job_live[index];
 
     return 0;
+}
+
+
+int find_job(int number,pid_t *pgid){
+    int index=number-1;
+
+    if(index<0 || index>=job_count || job_live[index]==0) return -1;
+
+    *pgid=job_pid[index];
+
+    return index;
+}
+
+
+void set_job_stopped(int index,int value){
+    if(index>=0 && index<job_count) job_stopped[index]=value;
+}
+
+
+void finish_job(int index){
+    if(index>=0 && index<job_count){
+        job_live[index]=0;
+        job_stopped[index]=0;
+    }
+}
+
+
+const char *job_command_text(int index){
+    if(index<0 || index>=job_count) return "";
+    return job_command[index];
 }

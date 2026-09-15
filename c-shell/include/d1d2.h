@@ -23,4 +23,17 @@ int take_interrupt(void);
 
 void shutdown_jobs(void);
 
+int runcomm(ShellState *state,const TokenList *tokens);
+int is_builtin(const char *name);
+void reset_child_mask(void);
+
+void start_job_timer(long seconds);
+void stop_job_timer(void);
+int job_timer_fired(void);
+
+int find_job(int number,pid_t *pgid);
+void set_job_stopped(int index,int value);
+void finish_job(int index);
+const char *job_command_text(int index);
+
 #endif

@@ -87,7 +87,7 @@ int run_external(ShellState *state,const TokenList *tokens){
     OutputRedirect output;
     pid_t child;
     pid_t group;
-    int status;
+    int status=0;
 
 
     int stopped=0;
@@ -146,6 +146,7 @@ int run_external(ShellState *state,const TokenList *tokens){
         signal(SIGINT,SIG_DFL);
         signal(SIGTSTP,SIG_DFL);
         signal(SIGTTOU,SIG_DFL);
+        reset_child_mask();
 
 
         if(input_stream!=NULL &&
@@ -186,6 +187,10 @@ int run_external(ShellState *state,const TokenList *tokens){
             if(stopped){
                 int job_number=add_stopped_job(child,tokens);
                 if(job_number>0) print_stopped(job_number);
+            }
+            else if(WIFSIGNALED(status) && WTERMSIG(status)==SIGINT){
+                putchar('\n');
+                fflush(stdout);
             }
         }
     }

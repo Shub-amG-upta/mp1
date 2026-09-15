@@ -139,7 +139,8 @@ static void print_directory(const char *path,const char *shown_path,
         }
 
         if(entries[i].directory){
-            printf("%s\n",child_shown);
+            /* B2 #6: only -t shows the trailing '/' */
+            printf(recursive ? "%s/\n" : "%s\n",child_shown);
             if(recursive){
                 print_directory(child_path,child_shown,show_hidden,recursive);
             }

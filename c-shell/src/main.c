@@ -51,6 +51,16 @@ int main(void)
 
         eof_after_stopped=0;
 
+        if (strchr(input, '\n') == NULL &&
+            strlen(input) == sizeof(input) - 1) {
+            int ch;
+            while ((ch = getchar()) != '\n' && ch != EOF) {
+            }
+            clearerr(stdin);
+            fputs("cshell: input too long\n", stderr);
+            continue;
+        }
+
         if (input[0] == '\0') {
             continue;
         }

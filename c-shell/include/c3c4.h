@@ -25,5 +25,6 @@ int wait_with_relay(pid_t child,OutputRedirect *output,int *status);
 void output_redirect_destroy(OutputRedirect *output);
 
 int run_pipeline(ShellState *state,const TokenList *tokens);
+int launch_background_pipeline(ShellState *state,const TokenList *tokens);
 
 #endif
