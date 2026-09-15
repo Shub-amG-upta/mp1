@@ -429,6 +429,87 @@ kwait(uint64 addr)
   }
 }
 
+// Like kwait(), but also reports scheduling statistics for the reaped child:
+//   rtime   = ticks the child spent actually running on a CPU
+//   wtime   = ticks it spent alive but not running (turnaround - rtime)
+//   restime = ticks between creation and the first time it got the CPU
+// Any of the addresses may be 0 to skip that value.
+int
+kwaitx(uint64 addr, uint64 rt_addr, uint64 wt_addr, uint64 rest_addr)
+{
+  struct proc *pp;
+  int havekids, pid;
+  struct proc *p = myproc();
+
+  acquire(&wait_lock);
+
+  for (;;) {
+    havekids = 0;
+    for (pp = proc; pp < &proc[NPROC]; pp++) {
+      if (pp->parent == p) {
+        acquire(&pp->lock);
+
+        havekids = 1;
+        if (pp->state == ZOMBIE) {
+          int rtime   = (int)pp->rtime;
+          int turn    = (int)(pp->etime - pp->ctime);
+          int wtime   = turn - rtime;
+          int restime = (pp->first_run < 0) ? -1
+                                            : (int)(pp->first_run - (int)pp->ctime);
+          if (wtime < 0)
+            wtime = 0;
+
+          pid = pp->pid;
+          if (addr != 0 &&
+              copyout(p->pagetable, p->sz, addr, (char *)&pp->xstate,
+                      sizeof(pp->xstate)) < 0) {
+            release(&pp->lock);
+            release(&wait_lock);
+            return -1;
+          }
+          if (rt_addr != 0 &&
+              copyout(p->pagetable, p->sz, rt_addr, (char *)&rtime,
+                      sizeof(rtime)) < 0) {
+            release(&pp->lock);
+            release(&wait_lock);
+            return -1;
+          }
+          if (wt_addr != 0 &&
+              copyout(p->pagetable, p->sz, wt_addr, (char *)&wtime,
+                      sizeof(wtime)) < 0) {
+            release(&pp->lock);
+            release(&wait_lock);
+            return -1;
+          }
+          if (rest_addr != 0 &&
+              copyout(p->pagetable, p->sz, rest_addr, (char *)&restime,
+                      sizeof(restime)) < 0) {
+            release(&pp->lock);
+            release(&wait_lock);
+            return -1;
+          }
+          pp->parent = 0;
+          freeproc(pp);
+          release(&pp->lock);
+          release(&wait_lock);
+          return pid;
+        }
+        release(&pp->lock);
+      }
+    }
+
+    if (!havekids || killed(p)) {
+      release(&wait_lock);
+      return -1;
+    }
+
+    sleep_prepare(p);
+    release(&wait_lock);
+    sleep();
+    acquire(&wait_lock);
+  }
+}
+
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
 // Scheduler never returns.  It loops, doing:
@@ -459,6 +540,8 @@ scheduler(void)
         // Switch to chosen process.  It is the process's job
         // to release its lock and then reacquire it
         // before jumping back to us.
+        if (p->first_run < 0)
+          p->first_run = ticks;   // scheduler bookkeeping: response time
         p->state = RUNNING;
         c->proc = p;
         swtch(&c->context, &p->context);
