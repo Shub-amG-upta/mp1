@@ -82,8 +82,11 @@ usertrap(void)
     kexit(-1);
 
   // give up the CPU if this is a timer interrupt.
+  // FIFO is non-preemptive: a process runs until it blocks or exits.
+#ifndef FIFO
   if (which_dev == 2)
     yield();
+#endif
 
   prepare_return();
 
@@ -154,8 +157,11 @@ kerneltrap()
   }
 
   // give up the CPU if this is a timer interrupt.
+  // FIFO is non-preemptive: a process runs until it blocks or exits.
+#ifndef FIFO
   if (which_dev == 2 && myproc() != 0)
     yield();
+#endif
 
   // the yield() may have caused some traps to occur,
   // so restore trap registers for use by kernelvec.S's sepc instruction.

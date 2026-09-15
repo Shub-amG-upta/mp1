@@ -533,6 +533,45 @@ scheduler(void)
     intr_on();
     intr_off();
 
+#ifdef FIFO
+    // ---------------- First Come First Served ----------------
+    // Run the RUNNABLE process with the smallest ctime, i.e. the one that
+    // was created earliest.  Ties go to the lower slot in proc[].
+    //
+    // The scan keeps the current best candidate's lock held while it looks
+    // at later slots.  Because every core scans proc[] in ascending order
+    // and only ever holds a lock on a slot below the one it is acquiring,
+    // no cycle of waits can form and this cannot deadlock.
+    struct proc *best = 0;
+
+    for (p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if (p->state == RUNNABLE && (best == 0 || p->ctime < best->ctime)) {
+        if (best != 0)
+          release(&best->lock);
+        best = p;
+        continue;                 // deliberately keep best->lock held
+      }
+      release(&p->lock);
+    }
+
+    if (best != 0) {
+      p = best;                   // p->lock is held here
+      if (p->first_run < 0)
+        p->first_run = ticks;     // scheduler bookkeeping: response time
+      p->state = RUNNING;
+      c->proc = p;
+      swtch(&c->context, &p->context);
+
+      mycpu()->intena = 0;
+      c->proc = 0;
+      release(&p->lock);
+    } else {
+      // nothing to run; stop running on this core until an interrupt.
+      asm volatile("wfi");
+    }
+#else
+    // ---------------- Round Robin (stock xv6) ----------------
     int found = 0;
     for (p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
@@ -560,6 +599,7 @@ scheduler(void)
       // nothing to run; stop running on this core until an interrupt.
       asm volatile("wfi");
     }
+#endif
   }
 }
 
