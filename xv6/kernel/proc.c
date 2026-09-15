@@ -608,6 +608,22 @@ scheduler(void)
       p = best;                   // p->lock is held here
       if (p->first_run < 0)
         p->first_run = ticks;     // scheduler bookkeeping: response time
+
+#ifdef MLFQ_LOG
+      // trace line for the queue-vs-time plot: tick, pid, queue
+      {
+        static int lg_tick = -1, lg_pid = -1, lg_pri = -1;
+
+        if ((int)ticks != lg_tick || p->pid != lg_pid ||
+            p->priority != lg_pri) {
+          lg_tick = (int)ticks;
+          lg_pid = p->pid;
+          lg_pri = p->priority;
+          printk("MLFQ %d %d %d\n", lg_tick, lg_pid, lg_pri);
+        }
+      }
+#endif
+
       p->state = RUNNING;
       c->proc = p;
       swtch(&c->context, &p->context);
