@@ -83,7 +83,13 @@ usertrap(void)
 
   // give up the CPU if this is a timer interrupt.
   // FIFO is non-preemptive: a process runs until it blocks or exits.
-#ifndef FIFO
+  // MLFQ decides for itself whether the slice is over (see mlfq_tick).
+#if defined(FIFO)
+  // nothing to do
+#elif defined(MLFQ)
+  if (which_dev == 2)
+    mlfq_tick();
+#else
   if (which_dev == 2)
     yield();
 #endif
@@ -158,7 +164,13 @@ kerneltrap()
 
   // give up the CPU if this is a timer interrupt.
   // FIFO is non-preemptive: a process runs until it blocks or exits.
-#ifndef FIFO
+  // MLFQ decides for itself whether the slice is over (see mlfq_tick).
+#if defined(FIFO)
+  // nothing to do
+#elif defined(MLFQ)
+  if (which_dev == 2 && myproc() != 0)
+    mlfq_tick();
+#else
   if (which_dev == 2 && myproc() != 0)
     yield();
 #endif
@@ -180,6 +192,14 @@ clockintr()
 
     // scheduler bookkeeping: charge this tick to whatever is running
     update_time();
+
+#ifdef MLFQ
+    // anti-starvation: drag everybody back to queue 0 periodically.
+    // Done after tickslock is released so that taking p->lock here cannot
+    // invert the tickslock -> p->lock order used elsewhere.
+    if (ticks % 48 == 0)
+      mlfq_boost();
+#endif
   }
 
   // ask for the next timer interrupt. this also clears

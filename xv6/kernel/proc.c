@@ -570,6 +570,55 @@ scheduler(void)
       // nothing to run; stop running on this core until an interrupt.
       asm volatile("wfi");
     }
+#elif defined(MLFQ)
+    // ---------------- Multi Level Feedback Queue ----------------
+    // The four queues are represented implicitly rather than as four lists:
+    //   p->priority  says WHICH queue the process is in (0 highest .. 3)
+    //   p->enq_time  says WHERE in that queue it sits (tick it joined the tail)
+    // So "highest priority queue, front of that queue" is simply the smallest
+    // (priority, enq_time) pair, and "move to the tail of a queue" is just
+    // setting enq_time = ticks.  Ties go to the lower slot in proc[].
+    struct proc *best = 0;
+
+    for (p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+
+      if (p->state == RUNNABLE) {
+        // A process that just woke up (or was just created) is not yet in the
+        // queuing network.  Put it at the tail of its own queue; its priority
+        // is unchanged, which is what rule 5 requires for a voluntary yield.
+        if (p->queued == 0) {
+          p->enq_time = ticks;
+          p->queued = 1;
+        }
+
+        if (best == 0 || p->priority < best->priority ||
+            (p->priority == best->priority && p->enq_time < best->enq_time)) {
+          if (best != 0)
+            release(&best->lock);
+          best = p;
+          continue;               // deliberately keep best->lock held
+        }
+      }
+
+      release(&p->lock);
+    }
+
+    if (best != 0) {
+      p = best;                   // p->lock is held here
+      if (p->first_run < 0)
+        p->first_run = ticks;     // scheduler bookkeeping: response time
+      p->state = RUNNING;
+      c->proc = p;
+      swtch(&c->context, &p->context);
+
+      mycpu()->intena = 0;
+      c->proc = 0;
+      release(&p->lock);
+    } else {
+      // nothing to run; stop running on this core until an interrupt.
+      asm volatile("wfi");
+    }
 #else
     // ---------------- Round Robin (stock xv6) ----------------
     int found = 0;
@@ -805,6 +854,99 @@ either_copyin(void *dst, int user_src, uint64 src, uint64 len)
 // Print a process listing to console.  For debugging.
 // Runs when user types ^P on console.
 // No lock to avoid wedging a stuck machine further.
+#ifdef MLFQ
+
+// Time slice of each queue, in timer ticks.  Queue 0 is the highest priority
+// and gets the shortest slice; queue 3 is the lowest and gets the longest.
+static const int mlfq_slice[4] = {1, 4, 8, 16};
+
+// Is there a RUNNABLE process sitting in a queue strictly above `pri`?
+// Used to honour strict priority: a lower priority process must give way at
+// the next tick boundary when something more important becomes runnable.
+static int
+mlfq_higher_runnable(int pri, struct proc *self)
+{
+  struct proc *q;
+  int found = 0;
+
+  for (q = proc; q < &proc[NPROC]; q++) {
+    if (q == self)
+      continue;
+    acquire(&q->lock);
+    if (q->state == RUNNABLE && q->priority < pri)
+      found = 1;
+    release(&q->lock);
+    if (found)
+      break;
+  }
+  return found;
+}
+
+// Called from the trap handler on every timer interrupt, in place of the
+// unconditional yield() that round robin uses.  Charges the tick to the
+// running process and decides whether it must give up the CPU:
+//
+//   - it used up the whole slice for its queue  -> demote one level and
+//     re-insert at the TAIL of the new queue (queue 3 re-inserts into 3)
+//   - something in a higher queue is runnable   -> yield without demoting,
+//     keeping its position and the rest of its slice
+void
+mlfq_tick(void)
+{
+  struct proc *p = myproc();
+  int expired, pri;
+
+  if (p == 0)
+    return;
+
+  acquire(&p->lock);
+  p->slice_used++;
+  expired = (p->slice_used >= mlfq_slice[p->priority]);
+  if (expired) {
+    if (p->priority < 3)
+      p->priority++;            // demote one level
+    p->slice_used = 0;
+    p->enq_time = ticks;        // tail of the (possibly new) queue
+  }
+  pri = p->priority;
+  release(&p->lock);
+
+  if (expired || mlfq_higher_runnable(pri, p))
+    yield();
+}
+
+// How often every process is dragged back up to queue 0, in ticks.
+#define MLFQ_BOOST_INTERVAL 48
+
+// Tick at which the last priority boost happened.  Only read/written by
+// clockintr() on CPU 0, and by procdump() for display.
+uint mlfq_last_boost = 0;
+
+// Anti-starvation (rule 7).  Every MLFQ_BOOST_INTERVAL ticks, move every
+// process in the system back to queue 0, whatever queue it had sunk to.
+//
+// enq_time is deliberately left alone: the processes keep their relative
+// FIFO order inside queue 0 instead of all being stamped with the same tick
+// and then ordered arbitrarily.  slice_used is reset so each one starts the
+// boosted queue with a full (1 tick) slice.
+void
+mlfq_boost(void)
+{
+  struct proc *p;
+
+  for (p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if (p->state != UNUSED) {
+      p->priority = 0;
+      p->slice_used = 0;
+    }
+    release(&p->lock);
+  }
+  mlfq_last_boost = ticks;
+}
+
+#endif // MLFQ
+
 // Called once per timer tick from clockintr().  Charges the tick to every
 // process that is currently on a CPU, so that rtime ends up holding the total
 // number of ticks the process actually spent running.
@@ -845,7 +987,17 @@ procdump(void)
       state = states[p->state];
     else
       state = "???";
+#ifdef MLFQ
+    printk("%d %s %s  q=%d slice=%d/%d boost=%d", p->pid, state, p->name,
+           p->priority, p->slice_used,
+           (p->priority >= 0 && p->priority < 4) ? mlfq_slice[p->priority] : 0,
+           (int)(ticks - mlfq_last_boost));
+#elif defined(FIFO)
+    printk("%d %s %s  ctime=%d rtime=%d", p->pid, state, p->name, (int)p->ctime,
+           (int)p->rtime);
+#else
     printk("%d %s %s", p->pid, state, p->name);
+#endif
     printk("\n");
   }
 }
