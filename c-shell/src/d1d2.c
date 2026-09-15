@@ -6,6 +6,9 @@
 #include "activities.h"
 #include "parser.h"
 #include "resume.h"
+#include "ping.h"
+#include "spy.h"
+#include "snoop.h"
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
@@ -14,17 +17,17 @@
 #include <unistd.h>
 #include<string.h>
 #include <fcntl.h>
-#include <sys/time.h>                            
+#include <sys/time.h>
 
-extern char **environ;  
-#define MAX_JOBS 128
+extern char **environ;
+#define MAX_JOBS 1024
 
 static pid_t job_pid[MAX_JOBS];
 static char job_name[MAX_JOBS][32];
 static volatile sig_atomic_t job_live[MAX_JOBS];
 static volatile sig_atomic_t job_stopped[MAX_JOBS];
-static volatile sig_atomic_t job_leader_done[MAX_JOBS];        
-static char job_command[MAX_JOBS][256];                        
+static volatile sig_atomic_t job_leader_done[MAX_JOBS];
+static char job_command[MAX_JOBS][256];
 static int job_count=0;
 static sigset_t child_mask;
 
@@ -34,19 +37,18 @@ static pid_t shellpgid=-1;
 static int backgroundchild=0;
 static volatile sig_atomic_t interrupted=0;
 static volatile sig_atomic_t alarm_fired=0;
-
+static int bg_gate[2]={-1,-1};
+static pid_t shellpid=-1;
 
 static void handle_interrupt(int signal_number){
     (void)signal_number;
     interrupted=1;
 }
 
-
 static void handle_alarm(int signal_number){
     (void)signal_number;
     alarm_fired=1;
 }
-
 
 void start_job_timer(long seconds){
     struct itimerval timer;
@@ -59,19 +61,15 @@ void start_job_timer(long seconds){
     setitimer(ITIMER_REAL,&timer,NULL);
 }
 
-
 void stop_job_timer(void){
     struct itimerval timer={{0,0},{0,0}};
     setitimer(ITIMER_REAL,&timer,NULL);
 }
 
-
 int job_timer_fired(void){
     return alarm_fired;
 }
 
-
-/* children inherit the blocked SIGCHLD from run_tokens, execve keeps it */
 void reset_child_mask(void){
     sigset_t unblock;
 
@@ -82,15 +80,35 @@ void reset_child_mask(void){
     sigemptyset(&unblock);
     sigaddset(&unblock,SIGCHLD);
     sigprocmask(SIG_UNBLOCK,&unblock,NULL);
+
+    if(bg_gate[0]>=0){
+        char byte;
+
+        close(bg_gate[1]);
+        while(read(bg_gate[0],&byte,1)<0 && errno==EINTR){
+        }
+        close(bg_gate[0]);
+        bg_gate[0]=-1;
+        bg_gate[1]=-1;
+    }
 }
 
+static void close_gate(void){
+    if(bg_gate[0]>=0) close(bg_gate[0]);
+    if(bg_gate[1]>=0) close(bg_gate[1]);
+    bg_gate[0]=-1;
+    bg_gate[1]=-1;
+}
+
+pid_t get_shell_pid(void){
+    return shellpid;
+}
 
 int take_interrupt(void){
     int value=interrupted;
     interrupted=0;
     return value;
 }
-
 
 static void report(const char *name,pid_t pid,int normal){
     char line[96];
@@ -109,7 +127,6 @@ static void report(const char *name,pid_t pid,int normal){
 
     if(write(STDOUT_FILENO,line,n)<0) return;
 }
-
 
 static void handle_sigchld(int signal_number){
     int saved=errno;
@@ -144,7 +161,6 @@ static void handle_sigchld(int signal_number){
         }
     }
 
-    /* a job stays listed until every process in its group is gone */
     for(int i=0;i<job_count;i++){
 
         if(job_live[i] && job_leader_done[i] && kill(-job_pid[i],0)!=0){
@@ -156,10 +172,9 @@ static void handle_sigchld(int signal_number){
     errno=saved;
 }
 
+static void initterminal(void){
 
-static void initterminal(void){    
-
-    shellterminal=open("/dev/tty",O_RDWR);
+    shellterminal=open("/dev/tty",O_RDWR|O_CLOEXEC);
 
     if(shellterminal<0){
         perror("cshell: unable to open terminal");
@@ -187,28 +202,23 @@ static void initterminal(void){
     sigaction(SIGALRM,&action,NULL);
 }
 
-
-int getshellterminal(void){ 
+int getshellterminal(void){
     return shellterminal;
 }
 
-
-void giveterminal(pid_t pgid){ 
+void giveterminal(pid_t pgid){
     if(shellterminal>=0){
         tcsetpgrp(shellterminal,pgid);
     }
 }
 
-
 int is_background_child(void){
     return backgroundchild;
 }
 
-
 void set_background_child(int value){
     backgroundchild=value;
 }
-
 
 static void save_command(int index,const TokenList *tokens){
     size_t pos=0;
@@ -231,7 +241,6 @@ static void save_command(int index,const TokenList *tokens){
 
     job_command[index][pos]='\0';
 }
-
 
 int add_stopped_job(pid_t pgid,const TokenList *tokens){
 
@@ -273,14 +282,12 @@ int add_stopped_job(pid_t pgid,const TokenList *tokens){
     return job_count;
 }
 
-
 void print_stopped(int number){
     if(number<1 || number>job_count) return;
 
     printf("\n[%d] + Stopped   %s\n",number,job_command[number-1]);
     fflush(stdout);
 }
-
 
 int has_stopped_jobs(void){
 
@@ -294,7 +301,6 @@ int has_stopped_jobs(void){
     return 0;
 }
 
-
 void shutdown_jobs(void){
 
     for(int i=0;i<job_count;i++){
@@ -306,8 +312,9 @@ void shutdown_jobs(void){
     }
 }
 
-
 void buff(void){
+
+    shellpid=getpid();
 
     initterminal();
 
@@ -325,7 +332,6 @@ void buff(void){
         perror("cshell: sigaction failed");
     }
 }
-
 
 static int not_found(const TokenList *tokens){
     const char *name;
@@ -350,16 +356,67 @@ static int not_found(const TokenList *tokens){
     return 0;
 }
 
+static int has_pipe(const TokenList *tokens);
+
+static int has_redirect(const TokenList *tokens){
+    for(size_t i=0;i<tokens->count;i++){
+        if(tokens->items[i].type==TOKEN_OP_LT ||
+           tokens->items[i].type==TOKEN_OP_GT ||
+           tokens->items[i].type==TOKEN_OP_GTGT) return 1;
+    }
+    return 0;
+}
 
 int runcomm(ShellState *state,const TokenList *tokens){
 
-    if(run_pipeline(state,tokens)==0 && 
+    if(tokens->count>0 && tokens->items[0].type==TOKEN_WORD &&
+       is_builtin(tokens->items[0].text) &&
+       strcmp(tokens->items[0].text,"hop")!=0 &&
+       has_redirect(tokens) && has_pipe(tokens)==0){
+
+        run_redirected_builtin(state,tokens);
+
+        return 1;
+    }
+
+    if(tokens->count>0 && tokens->items[0].type==TOKEN_WORD &&
+       strcmp(tokens->items[0].text,"hop")==0 && has_redirect(tokens)){
+
+        OutputRedirect output;
+
+        for(size_t i=0;i+1<tokens->count;i++){
+            if(tokens->items[i].type==TOKEN_OP_LT){
+                int fd=open(tokens->items[i+1].text,O_RDONLY);
+
+                if(fd<0){
+                    fputs("cshell: no such file or directory\n",stderr);
+                    return 1;
+                }
+                close(fd);
+            }
+        }
+
+        output_redirect_init(&output);
+
+        if(prepare_output(tokens,&output)!=0){
+            fputs("cshell: unable to create file for writing\n",stderr);
+            output_redirect_destroy(&output);
+            return 1;
+        }
+
+        output_redirect_destroy(&output);
+    }
+
+    if(run_pipeline(state,tokens)==0 &&
     run_hop(state,tokens)==0
-    && run_locate(state,tokens)==0 
-    && run_peek(state,tokens)==0 
+    && run_locate(state,tokens)==0
+    && run_peek(state,tokens)==0
     && run_reveal(state,tokens)==0
     && runactivity(state,tokens)==0
-    && run_resume(state,tokens)==0){
+    && run_resume(state,tokens)==0
+    && run_ping(state,tokens)==0
+    && run_spy(state,tokens)==0
+    && run_snoop(state,tokens)==0){
 
         int missing=not_found(tokens);
 
@@ -371,13 +428,13 @@ int runcomm(ShellState *state,const TokenList *tokens){
     return 1;
 }
 
-
 int is_builtin(const char *name){
     return strcmp(name,"hop")==0 || strcmp(name,"reveal")==0 ||
            strcmp(name,"peek")==0 || strcmp(name,"locate")==0 ||
-           strcmp(name,"activities")==0 || strcmp(name,"resume")==0;
+           strcmp(name,"activities")==0 || strcmp(name,"resume")==0 ||
+           strcmp(name,"ping")==0 || strcmp(name,"spy")==0 ||
+           strcmp(name,"snoop")==0;
 }
-
 
 static int has_pipe(const TokenList *tokens){
     for(size_t i=0;i<tokens->count;i++){
@@ -385,7 +442,6 @@ static int has_pipe(const TokenList *tokens){
     }
     return 0;
 }
-
 
 int runbuff(ShellState *state,const TokenList *tokens){
     sigset_t previous;
@@ -400,6 +456,11 @@ int runbuff(ShellState *state,const TokenList *tokens){
 
     sigprocmask(SIG_BLOCK,&child_mask,&previous);
 
+    if(pipe(bg_gate)!=0){
+        bg_gate[0]=-1;
+        bg_gate[1]=-1;
+    }
+
     if(has_pipe(tokens)){
         child=launch_background_pipeline(state,tokens);
     }
@@ -409,6 +470,7 @@ int runbuff(ShellState *state,const TokenList *tokens){
 
     if(child<0){
 
+        close_gate();
         sigprocmask(SIG_SETMASK,&previous,NULL);
 
         if(has_pipe(tokens)==0){
@@ -432,7 +494,8 @@ int runbuff(ShellState *state,const TokenList *tokens){
 
         sigprocmask(SIG_SETMASK,&previous,NULL);
 
-        if(simple_external(tokens)){
+        if(simple_external(tokens) &&
+           is_builtin(tokens->items[0].text)==0){
 
             char *argv[64];
             const char *cmd=tokens->items[0].text;
@@ -456,7 +519,7 @@ int runbuff(ShellState *state,const TokenList *tokens){
             path=find_executable(cmd,path_only);
 
             if(path!=NULL){
-                execve(path,argv,environ);
+                exec_command(path,argv);
             }
 
             fprintf(stderr,
@@ -500,19 +563,20 @@ int runbuff(ShellState *state,const TokenList *tokens){
 
     fflush(stdout);
 
+    close_gate();
+
     sigprocmask(SIG_SETMASK,&previous,NULL);
 
     return 1;
 }
-
 
 static int run_tokens(ShellState *state,const TokenList *tokens){
     size_t start=0;
 
     for(size_t i=0;i<=tokens->count;i++){
 
-        if(i==tokens->count || 
-        tokens->items[i].type==TOKEN_OP_SEMI || 
+        if(i==tokens->count ||
+        tokens->items[i].type==TOKEN_OP_SEMI ||
         tokens->items[i].type==TOKEN_OP_AMP){
 
             TokenList sublist;
@@ -523,7 +587,7 @@ static int run_tokens(ShellState *state,const TokenList *tokens){
                 sublist.count=i-start;
                 sublist.capacity=sublist.count;
 
-                if(i<tokens->count && 
+                if(i<tokens->count &&
                 tokens->items[i].type==TOKEN_OP_AMP){
 
                     runbuff(state,&sublist);
@@ -554,7 +618,6 @@ static int run_tokens(ShellState *state,const TokenList *tokens){
     return 1;
 }
 
-
 int run(const char *line,ShellState *state){
     TokenList tokens;
     int invalid;
@@ -573,11 +636,9 @@ int run(const char *line,ShellState *state){
     return 1;
 }
 
-
 int getjobcount(void){
     return job_count;
 }
-
 
 int getjobinfo(int index,pid_t *pid,char *pid_name,int *live){
 
@@ -596,7 +657,6 @@ int getjobinfo(int index,pid_t *pid,char *pid_name,int *live){
     return 0;
 }
 
-
 int find_job(int number,pid_t *pgid){
     int index=number-1;
 
@@ -607,11 +667,9 @@ int find_job(int number,pid_t *pgid){
     return index;
 }
 
-
 void set_job_stopped(int index,int value){
     if(index>=0 && index<job_count) job_stopped[index]=value;
 }
-
 
 void finish_job(int index){
     if(index>=0 && index<job_count){
@@ -620,8 +678,45 @@ void finish_job(int index){
     }
 }
 
-
 const char *job_command_text(int index){
     if(index<0 || index>=job_count) return "";
     return job_command[index];
+}
+
+int is_tracked_pid(pid_t pid){
+    pid_t group=getpgid(pid);
+
+    if(group<0) return 0;
+
+    for(int i=0;i<job_count;i++){
+        if(job_live[i] && job_pid[i]==group) return 1;
+    }
+
+    return 0;
+}
+
+void note_traced_exit(pid_t pid,int status){
+    sigset_t previous;
+
+    sigprocmask(SIG_BLOCK,&child_mask,&previous);
+
+    for(int i=0;i<job_count;i++){
+
+        if(job_live[i] && job_pid[i]==pid && job_leader_done[i]==0){
+
+            job_leader_done[i]=1;
+
+            report(job_name[i],
+                  pid,
+                  WIFEXITED(status));
+
+            if(kill(-job_pid[i],0)!=0){
+                job_live[i]=0;
+                job_stopped[i]=0;
+            }
+            break;
+        }
+    }
+
+    sigprocmask(SIG_SETMASK,&previous,NULL);
 }

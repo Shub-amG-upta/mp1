@@ -26,5 +26,6 @@ void output_redirect_destroy(OutputRedirect *output);
 
 int run_pipeline(ShellState *state,const TokenList *tokens);
 int launch_background_pipeline(ShellState *state,const TokenList *tokens);
+int run_redirected_builtin(ShellState *state,const TokenList *tokens);
 
 #endif

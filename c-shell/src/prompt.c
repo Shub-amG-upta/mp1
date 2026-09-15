@@ -10,16 +10,7 @@
 
 int shell_state_init(ShellState *state)
 {
-    const char *home = getenv("HOME");
-
-    if (home == NULL) {
-        struct passwd *password = getpwuid(getuid());
-        if (password != NULL) {
-            home = password->pw_dir;
-        }
-    }
-
-    state->home_dir = (home != NULL) ? strdup(home) : NULL;
+    state->home_dir = getcwd(NULL, 0);
     state->previous_dir = NULL;
     return state->home_dir == NULL ? -1 : 0;
 }
@@ -35,6 +26,10 @@ void shell_state_destroy(ShellState *state)
 static const char *display_path(const ShellState *state, const char *cwd)
 {
     size_t home_len = strlen(state->home_dir);
+
+    if (strcmp(state->home_dir, "/") == 0) {
+        return strcmp(cwd, "/") == 0 ? "" : cwd;
+    }
 
     if (strncmp(cwd, state->home_dir, home_len) == 0 &&
         (cwd[home_len] == '\0' || cwd[home_len] == '/')) {

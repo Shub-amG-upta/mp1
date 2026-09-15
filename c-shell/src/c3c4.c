@@ -107,7 +107,7 @@ void output_redirect_close_parent_write(OutputRedirect *output){
 int output_redirect_relay(OutputRedirect *output){
     char buffer[4096];
     ssize_t bytes_read;
-    int result=0; 
+    int result=0;
 
     while((bytes_read=read(output->read_fd,buffer,sizeof(buffer)))!=0){
         if(bytes_read<0){
@@ -156,6 +156,9 @@ int wait_with_relay(pid_t child,OutputRedirect *output,int *status){
         result=waitpid(child,status,
                        WUNTRACED|(output->read_fd>=0 ? WNOHANG : 0));
 
+        if(result==child && WIFSTOPPED(*status) && is_background_child()){
+            continue;
+        }
         if(result==child) return 0;
         if(result<0 && errno!=EINTR) return -1;
     }
@@ -223,7 +226,6 @@ static int stage_args(const TokenList *tokens,Stage *stage){
             fd=open(tokens->items[i+1].text,O_RDONLY);
             if(fd<0) return -1;
             if(stage->input>=0){
-                /* C2 #3: every '<' file, in order, as one stream */
                 fd=join_inputs(stage->input,fd);
                 stage->input=-1;
                 if(fd<0) return -1;
@@ -236,7 +238,6 @@ static int stage_args(const TokenList *tokens,Stage *stage){
             fd=open(tokens->items[i+1].text,flags,0644);
             if(fd<0) return -4;
             {
-                /* C3 #1: keep every output file, not just the last */
                 int *temp=realloc(stage->files,
                                   (stage->nfiles+1)*sizeof(int));
                 if(temp==NULL){
@@ -258,7 +259,7 @@ static int stage_args(const TokenList *tokens,Stage *stage){
 }
 
 static int make_stages(const TokenList *tokens,Stage **result,
-                       size_t *stage_count){
+                       size_t *stage_count,int force){
     size_t end=tokens->count;
     size_t count=1;
     size_t start=0;
@@ -273,7 +274,7 @@ static int make_stages(const TokenList *tokens,Stage **result,
     for(size_t i=0;i<end;i++){
         if(tokens->items[i].type==TOKEN_OP_PIPE) count++;
     }
-    if(count==1) return 0;
+    if(count==1 && force==0) return 0;
     stages=calloc(count,sizeof(Stage));
     if(stages==NULL) return -3;
     for(size_t i=0;i<count;i++){
@@ -304,7 +305,6 @@ static int make_stages(const TokenList *tokens,Stage **result,
     return 1;
 }
 
-/* child side: close every stage descriptor this process does not use */
 static void close_stage_fds(Stage *stages,size_t count,size_t own){
     for(size_t j=0;j<count;j++){
         if(j!=own){
@@ -332,9 +332,8 @@ static void run_tee(Stage *stage,int fd){
     _exit(0);
 }
 
-/* background!=0: new job group led by the first stage, no terminal,
-   no waiting. Returns the leader pid (or -1) in that mode. */
-static int pipeline(ShellState *state,const TokenList *tokens,int background){
+static int pipeline(ShellState *state,const TokenList *tokens,int background,
+                    int force){
     Stage *stages=NULL;
     size_t count=0;
     int (*pipes)[2]=NULL;
@@ -345,7 +344,7 @@ static int pipeline(ShellState *state,const TokenList *tokens,int background){
     int stopped=0;
     int interrupted=0;
     pid_t group;
-    result=make_stages(tokens,&stages,&count);
+    result=make_stages(tokens,&stages,&count,force);
     if(result==0) return 0;
     if(result<0){
         if(result==-1) fputs("cshell: no such file or directory\n",stderr);
@@ -354,7 +353,7 @@ static int pipeline(ShellState *state,const TokenList *tokens,int background){
         }else fputs("cshell: invalid syntax\n",stderr);
         return background ? -1 : 1;
     }
-    pipes=calloc(count-1,sizeof(int[2]));
+    pipes=calloc(count>1 ? count-1 : 1,sizeof(int[2]));
     children=calloc(count*2,sizeof(pid_t));
     if(pipes==NULL || children==NULL){
         free(pipes);
@@ -393,6 +392,10 @@ static int pipeline(ShellState *state,const TokenList *tokens,int background){
                 setpgid(0,children[0]);
             }
 
+            if(group==0 && background==0){
+                giveterminal(i==0 ? getpid() : children[0]);
+            }
+
             signal(SIGINT,SIG_DFL);
             signal(SIGTSTP,SIG_DFL);
             signal(SIGTTOU,SIG_DFL);
@@ -424,7 +427,6 @@ static int pipeline(ShellState *state,const TokenList *tokens,int background){
             }
             close_stage_fds(stages,count,i);
 
-            /* builtins can be pipeline stages too */
             if(is_builtin(name)){
                 TokenList words;
 
@@ -458,7 +460,7 @@ static int pipeline(ShellState *state,const TokenList *tokens,int background){
                 _exit(127);
             }
 
-            execve(path,stages[i].args,environ);
+            exec_command(path,stages[i].args);
             fprintf(stderr,
                     "cshell: command not found (%s)\n",
                     name);
@@ -503,7 +505,6 @@ static int pipeline(ShellState *state,const TokenList *tokens,int background){
             }
         }
 
-        /* the tee only sees EOF once nobody else holds the write end */
         if(stages[i].tee[1]>=0){
             close(stages[i].tee[1]);
             stages[i].tee[1]=-1;
@@ -566,12 +567,14 @@ static int pipeline(ShellState *state,const TokenList *tokens,int background){
     return 1;
 }
 
-
 int run_pipeline(ShellState *state,const TokenList *tokens){
-    return pipeline(state,tokens,0);
+    return pipeline(state,tokens,0,0);
 }
 
-
 int launch_background_pipeline(ShellState *state,const TokenList *tokens){
-    return pipeline(state,tokens,1);
+    return pipeline(state,tokens,1,0);
+}
+
+int run_redirected_builtin(ShellState *state,const TokenList *tokens){
+    return pipeline(state,tokens,0,1);
 }

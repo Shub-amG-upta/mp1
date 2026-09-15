@@ -22,6 +22,7 @@ void print_stopped(int number);
 int take_interrupt(void);
 
 void shutdown_jobs(void);
+pid_t get_shell_pid(void);
 
 int runcomm(ShellState *state,const TokenList *tokens);
 int is_builtin(const char *name);
@@ -35,5 +36,7 @@ int find_job(int number,pid_t *pgid);
 void set_job_stopped(int index,int value);
 void finish_job(int index);
 const char *job_command_text(int index);
+int is_tracked_pid(pid_t pid);
+void note_traced_exit(pid_t pid,int status);
 
 #endif

@@ -109,7 +109,7 @@ static int read_entries(const char *path,int show_hidden,
     }
 
     closedir(directory);
-    qsort(entries,used,sizeof(RevealEntry),compare_entries);
+    if(used>1) qsort(entries,used,sizeof(RevealEntry),compare_entries);
     *result=entries;
     *count=used;
     return 0;
@@ -139,7 +139,6 @@ static void print_directory(const char *path,const char *shown_path,
         }
 
         if(entries[i].directory){
-            /* B2 #6: only -t shows the trailing '/' */
             printf(recursive ? "%s/\n" : "%s\n",child_shown);
             if(recursive){
                 print_directory(child_path,child_shown,show_hidden,recursive);

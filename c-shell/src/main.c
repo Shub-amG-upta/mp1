@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 int main(void)
 {
@@ -21,6 +22,7 @@ int main(void)
 
     for (;;) {
         if (print_prompt(&state) != 0) {
+            shutdown_jobs();
             shell_state_destroy(&state);
             return 1;
         }
@@ -50,6 +52,23 @@ int main(void)
         }
 
         eof_after_stopped=0;
+
+        while (isatty(STDIN_FILENO) && feof(stdin) &&
+               strchr(input, '\n') == NULL &&
+               strlen(input) < sizeof(input) - 1) {
+            size_t len = strlen(input);
+
+            clearerr(stdin);
+            errno = 0;
+
+            if (fgets(input + len, (int)(sizeof(input) - len), stdin) == NULL &&
+                (take_interrupt() || errno == EINTR)) {
+                clearerr(stdin);
+                input[0] = '\0';
+                putchar('\n');
+                break;
+            }
+        }
 
         if (strchr(input, '\n') == NULL &&
             strlen(input) == sizeof(input) - 1) {

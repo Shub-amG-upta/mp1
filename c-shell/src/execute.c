@@ -7,12 +7,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 extern char **environ;
 
 static int executable_file(const char *path){
+    struct stat info;
+
+    if(stat(path,&info)!=0 || !S_ISREG(info.st_mode)) return 0;
     return access(path,X_OK)==0;
 }
 
@@ -64,6 +68,23 @@ char *find_executable(const char *name,int path_only){
     return NULL;
 }
 
+void exec_command(const char *path,char **argv){
+    size_t count=0;
+
+    execve(path,argv,environ);
+    if(errno!=ENOEXEC) return;
+
+    while(argv[count]!=NULL) count++;
+    {
+        char *shell_argv[count+2];
+
+        shell_argv[0]="sh";
+        shell_argv[1]=(char *)path;
+        for(size_t i=1;i<=count;i++) shell_argv[i+1]=argv[i];
+        execve("/bin/sh",shell_argv,environ);
+    }
+}
+
 int simple_external(const TokenList *tokens){
     if(tokens->count==0) return 0;
 
@@ -74,8 +95,6 @@ int simple_external(const TokenList *tokens){
     }
     return 1;
 }
-
-
 
 int run_external(ShellState *state,const TokenList *tokens){
     size_t count;
@@ -88,7 +107,6 @@ int run_external(ShellState *state,const TokenList *tokens){
     pid_t child;
     pid_t group;
     int status=0;
-
 
     int stopped=0;
 
@@ -143,11 +161,12 @@ int run_external(ShellState *state,const TokenList *tokens){
 
         setpgid(0,group);
 
+        if(group==0) giveterminal(getpid());
+
         signal(SIGINT,SIG_DFL);
         signal(SIGTSTP,SIG_DFL);
         signal(SIGTTOU,SIG_DFL);
         reset_child_mask();
-
 
         if(input_stream!=NULL &&
            dup2(fileno(input_stream),STDIN_FILENO)<0){
@@ -160,7 +179,7 @@ int run_external(ShellState *state,const TokenList *tokens){
             _exit(1);
         }
         output_redirect_close_child(&output);
-        execve(path,argv,environ);
+        exec_command(path,argv);
         fprintf(stderr,"cshell: command not found (%s)\n",name);
         _exit(127);
     }
@@ -194,9 +213,6 @@ int run_external(ShellState *state,const TokenList *tokens){
             }
         }
     }
-
-
-
 
     free(argv);
     free(path);
